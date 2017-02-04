@@ -94,13 +94,6 @@
       (subs path 0 i)
       path)))
 
-(defn- relativize [parent path]
-  (let [path (.getCanonicalPath (fs/file path))
-        parent (.getCanonicalPath (fs/file parent))]
-    (if (.startsWith path parent)
-      (subs path (count parent))
-      path)))
-
 (def additional-file-extensions
   (try
     (apply #'read-string [{:read-cond :allow} "#?(:clj 5 :default nil)"])
@@ -116,7 +109,7 @@
         (.setLastModified target-file 5000))))
 
   ;; reload Clojure files
-  (alter-var-root #'refresh-tracker dir/scan)
+  (alter-var-root #'refresh-tracker #(apply dir/scan % paths))
   (alter-var-root #'refresh-tracker reload/track-reload)
   (when-let [e (::reload/error refresh-tracker)]
     (notify-cljs notify-command
@@ -130,10 +123,9 @@
         output-file (:output-to compiler-options)
         lib-paths (:libs compiler-options)
         output-mtime (if (fs/exists? output-file) (fs/mod-time output-file) 0)
-        clj-files-in-cljs-paths
-          (into {}
-            (for [cljs-path (concat cljs-paths checkout-paths)]
-              [cljs-path (util/find-files cljs-path (conj additional-file-extensions "clj"))]))
+        clj-files (mapcat (fn [cljs-path]
+                            (util/find-files cljs-path (conj additional-file-extensions "clj")))
+                          (concat cljs-paths checkout-paths))
         cljs-files (->> (concat cljs-paths checkout-paths)
                      (mapcat #(util/find-files % (conj additional-file-extensions "cljs")))
                      (remove #(contains? cljs.compiler/cljs-reserved-file-names (.getName (io/file %)))))
@@ -147,7 +139,7 @@
                       ; http://dev.clojure.org/jira/browse/CLJS-526)
                       (remove #(.startsWith ^String % output-dir-str))
                       (remove #(.endsWith ^String % (:output-to compiler-options)))))
-        clj-mtimes (get-mtimes (mapcat second clj-files-in-cljs-paths))
+        clj-mtimes (get-mtimes clj-files)
         cljs-mtimes (get-mtimes cljs-files)
         js-mtimes (get-mtimes js-files)
         dependency-mtimes (merge clj-mtimes cljs-mtimes js-mtimes)]
@@ -156,11 +148,7 @@
             cljs-modified (list-modified output-mtime cljs-mtimes)
             js-modified (list-modified output-mtime js-mtimes)]
         (when (seq clj-modified)
-          (reload-clojure cljs-files
-            (apply concat
-              (for [[cljs-path clj-files] clj-files-in-cljs-paths]
-                (map (partial relativize cljs-path) clj-files)))
-            compiler-options notify-command))
+          (reload-clojure cljs-files clj-files compiler-options notify-command))
         (when (or (seq clj-modified) (seq cljs-modified) (seq js-modified))
           (compile-cljs cljs-paths compiler-options notify-command incremental? assert? watching?))))
     dependency-mtimes))
